@@ -63,7 +63,22 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        int n = jtty_receive(audio, count, lo, hi, print_frame, NULL);
+        jtty_rx_config config = { lo, hi, 128, 128 };
+        jtty_rx       *rx = jtty_rx_create(&config);
+        int            n = rx ? 0 : -1;
+        for (size_t offset = 0; rx && offset < count;) {
+            size_t chunk = count - offset < 256 ? count - offset : 256;
+            int    got = jtty_rx_process(rx, audio + offset, chunk, print_frame, NULL);
+            if (got < 0) {
+                n = -1;
+                break;
+            }
+            n += got;
+            offset += chunk;
+        }
+        if (n >= 0)
+            n += jtty_rx_flush(rx, print_frame, NULL);
+        jtty_rx_destroy(rx);
         free(audio);
 
         if (n < 0) {
@@ -123,7 +138,7 @@ int main(int argc, char **argv) {
                 putchar('\n');
         }
     } else {
-        /* A short guard makes both ends observable for offline acquisition. */
+        /* A short guard leaves room for acquisition and boundary refinement. */
         size_t guard = 2400, count = (size_t) n * JTTY_FRAME_SAMPLES + 2 * guard;
         float *audio = calloc(count, sizeof(*audio));
 

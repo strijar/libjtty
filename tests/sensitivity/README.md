@@ -47,7 +47,8 @@ at −17 dB does not make that level suitable for reliable communication.
   the buffer. The true values are not supplied to the receivers.
 - Each buffer contains 45312 samples (3.776 seconds). White Gaussian noise is
   present throughout, including before and after the signal.
-- Both receivers search 950–1050 Hz. C is called through `jtty_receive`.
+- Both receivers search 950–1050 Hz. The current C harness uses `jtty_rx_process` followed by `jtty_rx_flush`.
+  The original measurements below predate the streaming receiver.
   WSJT-X uses the original `rjtty_sub` → `jtty_mdecode_step` pipeline, including
   `jtty_mdecode`, correlators, the coherent list-decoder ladder, retries, and
   signal subtraction. This compares full receivers, not just FEC decoders

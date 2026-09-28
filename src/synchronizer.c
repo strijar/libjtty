@@ -1,111 +1,122 @@
 #include "internal.h"
 #include <math.h>
-#include <stdlib.h>
+#include <string.h>
 
-#define HOP 48
-#define DF  7.8125
+void jt_sync_init(jtty_rx *rx) {
+    memset(rx->energy, 0, JT_ENERGY_ROWS * rx->bins * sizeof(float));
 
-/* Sliding rectangular DFT: O(samples * frequency_bins), independent of
- * symbol-window length. Only 4 ms energy snapshots are retained. */
+    for (size_t b = 0; b < rx->bins; b++) {
+        double w = 2 * JT_PI * (rx->config.fmin + (double) b * JT_DF) / JTTY_SAMPLE_RATE;
+        rx->bank[b] = (jt_bin) { cos(w), -sin(w), cos(w * JTTY_SPS), sin(w * JTTY_SPS), 1, 0, 0, 0 };
+    }
+}
 
-int jt_find_candidates(const float *audio, size_t count, double lo, double hi, jt_candidate *out, int capacity) {
-    size_t rows = (count - JTTY_SPS) / HOP + 1;
-    size_t starts = (count - JTTY_FRAME_SAMPLES) / HOP + 1;
-    int    bases = (int) floor((hi - lo) / DF) + 1, bins = bases + 12;
+static int nearby(const jt_pending *a, const jt_pending *b) {
+    uint64_t dt = a->sample > b->sample ? a->sample - b->sample : b->sample - a->sample;
 
-    if (rows > SIZE_MAX / (size_t) bins / sizeof(float) || starts > SIZE_MAX / (size_t) bases / sizeof(float))
-        return -1;
+    return dt <= 12 * JT_HOP && fabs(a->frequency - b->frequency) <= 2 * JT_DF;
+}
 
-    float *energy = calloc(rows * (size_t) bins, sizeof(*energy));
-    float *surface = calloc(starts * (size_t) bases, sizeof(*surface));
+/* Online nonmaximum suppression. Retain stronger hypotheses when full.
+ * All decisions depend on sample positions, never on process boundaries. */
+static void candidate(jtty_rx *rx, jt_pending c) {
+    for (size_t i = 0; i < rx->pending_count; i++)
+        if (nearby(&c, &rx->pending[i]) && rx->pending[i].score >= c.score)
+            return;
 
-    if (!energy || !surface) {
-        free(energy);
-        free(surface);
-        return -1;
+    for (size_t i = 0; i < rx->pending_count;)
+        if (nearby(&c, &rx->pending[i]))
+            rx->pending[i] = rx->pending[--rx->pending_count];
+        else
+            i++;
+
+    if (rx->pending_count < rx->config.candidate_capacity) {
+        rx->pending[rx->pending_count++] = c;
+        return;
     }
 
-    for (int b = 0; b < bins; b++) {
-        double w = 2 * JT_PI * (lo + b * DF) / 12000, wr = cos(w), wi = -sin(w);
-        double dr = cos(w * JTTY_SPS), di = sin(w * JTTY_SPS), zr = 1, zi = 0, re = 0, im = 0;
+    size_t weakest = 0;
 
-        for (size_t i = 0; i < count; i++) {
-            double xr = audio[i] * zr, xi = audio[i] * zi;
+    for (size_t i = 1; i < rx->pending_count; i++)
+        if (rx->pending[i].score < rx->pending[weakest].score)
+            weakest = i;
 
-            if (i >= JTTY_SPS) {
-                double old = audio[i - JTTY_SPS];
-                xr -= old * (zr * dr - zi * di);
-                xi -= old * (zr * di + zi * dr);
+    if (c.score > rx->pending[weakest].score)
+        rx->pending[weakest] = c;
+
+    rx->stats.candidates_dropped++;
+}
+
+void jt_sync_push(jtty_rx *rx, float sample) {
+    uint64_t n = rx->stats.samples;
+    double   old = n >= JTTY_SPS ? rx->audio[(n - JTTY_SPS) % JT_AUDIO_SIZE] : 0;
+
+    rx->audio[n % JT_AUDIO_SIZE] = sample;
+
+    int      snapshot = n + 1 >= JTTY_SPS && (n + 1 - JTTY_SPS) % JT_HOP == 0;
+    uint64_t row = snapshot ? (n + 1 - JTTY_SPS) / JT_HOP : 0;
+    float   *energy = rx->energy + (row % JT_ENERGY_ROWS) * rx->bins;
+
+    for (size_t b = 0; b < rx->bins; b++) {
+        jt_bin *v = &rx->bank[b];
+        v->re += sample * v->zr - old * (v->zr * v->dr - v->zi * v->di);
+        v->im += sample * v->zi - old * (v->zr * v->di + v->zi * v->dr);
+
+        /* Periodic direct reconstruction bounds accumulated cancellation error
+         * during indefinitely long streams, including silence after a signal. */
+        if ((n & 65535) == 65535) {
+            double zr = v->zr, zi = v->zi;
+
+            v->re = v->im = 0;
+
+            for (size_t k = 0; k < JTTY_SPS; k++) {
+                double x = rx->audio[(n - k) % JT_AUDIO_SIZE];
+
+                v->re += x * zr;
+                v->im += x * zi;
+
+                double r = zr * v->wr + zi * v->wi;
+
+                zi = zi * v->wr - zr * v->wi;
+                zr = r;
             }
+        }
 
-            re += xr;
-            im += xi;
+        if (snapshot)
+            energy[b] = (float) ((v->re * v->re + v->im * v->im) / (JTTY_SPS * JTTY_SPS));
 
-            if (i + 1 >= JTTY_SPS && (i + 1 - JTTY_SPS) % HOP == 0) {
-                size_t row = (i + 1 - JTTY_SPS) / HOP;
-                energy[row * (size_t) bins + (size_t) b] = (float) ((re * re + im * im) / (JTTY_SPS * JTTY_SPS));
-            }
+        double r = v->zr * v->wr - v->zi * v->wi;
+        v->zi = v->zr * v->wi + v->zi * v->wr;
+        v->zr = r;
 
-            double r = zr * wr - zi * wi;
-
-            zi = zr * wi + zi * wr;
-            zr = r;
-
-            if ((i & 4095) == 4095) {
-                double norm = hypot(zr, zi);
-
-                zr /= norm;
-                zi /= norm;
-            }
+        if ((n & 4095) == 4095) {
+            double norm = hypot(v->zr, v->zi);
+            v->zr /= norm;
+            v->zi /= norm;
         }
     }
 
-    for (size_t t = 0; t < starts; t++)
-        for (int b = 0; b < bases; b++) {
-            double score = 0;
+    rx->stats.samples++;
 
-            for (int s = 0; s < 13; s++) {
-                const float *e = energy + (t + (size_t) s * 8) * (size_t) bins + (size_t) b;
-                double       sum = (double) e[0] + e[4] + e[8] + e[12];
+    if (!snapshot || row < JT_ENERGY_ROWS - 1)
+        return;
 
-                if (sum > 1e-25)
-                    score += e[4 * jt_sync[s]] / sum;
-            }
-            surface[t * (size_t) bases + (size_t) b] = (float) (score / 13);
+    uint64_t start = row - (JT_ENERGY_ROWS - 1);
+
+    for (size_t b = 0; b < rx->bases; b++) {
+        double score = 0;
+
+        for (size_t s = 0; s < 13; s++) {
+            const float *e = rx->energy + ((start + s * 8) % JT_ENERGY_ROWS) * rx->bins + b;
+            double       sum = (double) e[0] + e[4] + e[8] + e[12];
+
+            if (sum > 1e-25)
+                score += e[4 * jt_sync[s]] / sum;
         }
 
-    free(energy);
-    int found = 0;
+        score /= 13;
 
-    /* Greedy peak extraction with a compact exclusion region. */
-
-    while (found < capacity) {
-        float  best = 0.46f;
-        size_t index = 0;
-        int    have = 0;
-
-        for (size_t i = 0; i < starts * (size_t) bases; i++)
-            if (surface[i] > best) {
-                best = surface[i];
-                index = i;
-                have = 1;
-            }
-
-        if (!have)
-            break;
-
-        size_t t = index / (size_t) bases;
-        int    b = (int) (index % (size_t) bases);
-
-        out[found++] = (jt_candidate) { t * HOP, lo + b * DF, best };
-        size_t low = t > 12 ? t - 12 : 0, high = t + 12 < starts ? t + 12 : starts - 1;
-
-        for (size_t r = low; r <= high; r++)
-            for (int f = b - 2; f <= b + 2; f++)
-                if (f >= 0 && f < bases)
-                    surface[r * (size_t) bases + (size_t) f] = 0;
+        if (score > 0.46)
+            candidate(rx, (jt_pending) { start * JT_HOP, rx->config.fmin + (double) b * JT_DF, score });
     }
-
-    free(surface);
-    return found;
 }

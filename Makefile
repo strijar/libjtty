@@ -27,9 +27,13 @@ build/jtty: tools/main.c tools/wav.c tools/wav.h build/libjtty.a
 build/test_%: tests/test_%.c build/libjtty.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< build/libjtty.a $(LDLIBS) -o $@
 
-test: build/test_jtty build/test_reference build/jtty
+build/test_stream: tests/test_stream.c build/libjtty.a
+	$(CC) $(CPPFLAGS) $(CFLAGS) -DJT_TEST_ALLOC $< build/libjtty.a $(LDLIBS) -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free -o $@
+
+test: build/test_jtty build/test_reference build/test_stream build/jtty
 	./build/test_jtty
 	./build/test_reference
+	./build/test_stream
 	./tests/cli.sh
 
 format:

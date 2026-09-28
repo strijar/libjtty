@@ -1,7 +1,7 @@
 #include "internal.h"
 #include <string.h>
 
-const char        jt_alphabet[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ +-./?!\"#$%,&*()_'=[]{}<>|:;";
+const char jt_alphabet[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ +-./?!\"#$%,&*()_'=[]{}<>|:;";
 
 const char *const jt_controls[] = {
     "AGN?",

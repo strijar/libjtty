@@ -10,7 +10,7 @@ extern void     wsjtx_wave(int64_t payload, float frequency, float *wave);
 extern void     wsjtx_receive(const int16_t *pcm, int count, const char *expected, int *correct, int *wrong);
 static uint32_t state;
 
-static double   uniform(void) {
+static double uniform(void) {
     state ^= state << 13;
     state ^= state >> 17;
     state ^= state << 5;
@@ -122,9 +122,13 @@ int main(int argc, char **argv) {
             result  got = { payload, 0, 0 };
             clock_t t = clock();
 
-            if (jtty_receive(audio, (size_t) count, 950, 1050, collect, &got) < 0)
+            jtty_rx_config config = { 950, 1050, 128, 128 };
+            jtty_rx       *rx = jtty_rx_create(&config);
+            if (!rx || jtty_rx_process(rx, audio, (size_t) count, collect, &got) < 0 ||
+                jtty_rx_flush(rx, collect, &got) < 0)
                 return 1;
 
+            jtty_rx_destroy(rx);
             ctime += (double) (clock() - t) / CLOCKS_PER_SEC;
 
             int hit = 0, other = 0;

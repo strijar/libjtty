@@ -41,7 +41,13 @@ int main(int argc, char **argv) {
     double relative = sqrt(error / power);
     printf("%s: identical tones; relative waveform RMS error %.6g\n", argv[1], relative);
     assert(relative < 0.005);
-    assert(jtty_receive(original, JTTY_FRAME_SAMPLES, 980, 1020, accept, NULL) == 1);
+    jtty_rx_config config = { 980, 1020, 128, 128 };
+    jtty_rx       *rx = jtty_rx_create(&config);
+    assert(rx);
+    int got = jtty_rx_process(rx, original, JTTY_FRAME_SAMPLES, accept, NULL);
+    assert(got >= 0);
+    assert(got + jtty_rx_flush(rx, accept, NULL) == 1);
+    jtty_rx_destroy(rx);
     assert(received == p);
     return 0;
 }

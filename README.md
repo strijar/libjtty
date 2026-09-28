@@ -52,14 +52,16 @@ The public interface is [include/jtty.h](include/jtty.h). For integration,
 complete examples, buffer ownership, return values, and individual functions,
 see [API.md](API.md).
 
-All buffers except internal work arrays belong to the caller. The library has
-no mutable global state, so independent calls can run in separate threads.
+Input/output arrays belong to the caller; receiver contexts own their working
+memory. There is no mutable global state, so independent contexts can run on
+separate threads.
 Callbacks run synchronously, and the frame pointer is valid only during the
 callback.
 
 To transmit text, call `jtty_pack`, encode each payload with `jtty_encode`, then
 pass the combined tone sequence to `jtty_modulate`. To receive audio, call
-`jtty_receive` with a completed buffer of real `float` samples at 12000 Hz.
+`jtty_rx_create` once, then feed real `float` samples at 12000 Hz through
+`jtty_rx_process`. Finish with `jtty_rx_flush` and `jtty_rx_destroy`.
 
 `jtty_pack` returns the frame count, 0 for empty text, or -1 on error. Its input
 is a NUL-terminated string; only the first 80 bytes are considered before
@@ -95,11 +97,22 @@ normal transmission should use payloads produced by the source packing APIs.
 tones. It verifies the circular trellis path, CRC, reserved-zero bit, and grammar.
 On failure it clears the payload when both argument pointers are valid.
 
-`jtty_receive` searches for frames and returns their count, or -1 on error.
-Results are chronological. It considers at most 128 acquisition candidates per
-call and accepts at most 120 seconds of input. Peak memory scales with duration
-and search bandwidth: approximately 90 MB for 120 seconds over 200–3000 Hz.
-The `sync` field is a score in [0,1], not an SNR estimate.
+The streaming receiver accepts arbitrary packet sizes, including one sample.
+Its configuration contains the lowest-tone frequency range, maximum pending
+candidate count, and decode budget per 256 ms of candidate start times. Results
+are chronological with stream-relative times, and duplicate suppression persists
+between packets. `process` and `flush` return delivered counts or -1 on error.
+
+Creation performs one allocation for all state; processing, flushing and reset
+perform none. Memory is independent of stream duration: about 293 KiB for
+950–1050 Hz with capacity 128 on a 64-bit build. Original audio is retained in a
+small ring for precise time/frequency refinement, alongside a short energy
+history and reusable FEC workspace. No LiquidDSP dependency is required.
+`jtty_rx_get_stats` reports memory, candidate drops and decoding attempts.
+The `sync` field is a score in [0,1], not an SNR estimate. See [API.md](API.md)
+for configuration, latency and stream lifecycle details. Regression checks,
+allocation measurements and before/after results are in
+[tests/streaming-results.md](tests/streaming-results.md).
 
 Use `jtty_unpack` to assemble text from a known sequence of frames. It inserts
 a space after structured atoms, preserves TEXT5 characters, and removes trailing
@@ -178,10 +191,10 @@ Conditions, confidence intervals, and the reproducible test harness:
 
 The receiver uses noncoherent correlators and up to four WAVA passes. It does
 not implement the WSJT-X coherent list decoder, signal subtraction, frequency
-drift or sample-clock tracking, or persistent streaming state. It decodes
-completed audio buffers; synthetic results do not establish equal sensitivity
-or interference rejection to WSJT-X. Streaming SDR applications need external
-buffering and sample-rate conversion.
+drift or sample-clock tracking. Synthetic results do not establish equal
+sensitivity or interference rejection to WSJT-X. Streaming SDR applications
+provide device buffering and any required sample-rate conversion. The historical
+WSJT-X comparison above predates the streaming implementation.
 
 The format and research sources are described in [PROTOCOL.md](PROTOCOL.md).
 License: GPL-3.0; see [COPYING](COPYING). Provenance: [NOTICE](NOTICE).

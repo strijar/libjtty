@@ -6,7 +6,7 @@ validated frames from audio. The public header is [include/jtty.h](include/jtty.
 
 ## Build and link
 
-The library requires the C standard library and `libm`. There is no runtime
+The library requires the C standard library and `libm`. There is no global runtime
 initialization or shutdown function, and no dependency on WSJT-X, Fortran,
 FFTW, or LiquidDSP. Optional interoperability and sensitivity tests have their
 own dependencies, described in [README.md](README.md).
@@ -62,7 +62,7 @@ as C and link it from your C++ application normally.
 | `JTTY_MAX_FRAMES` | 16 source atoms per packed message |
 | Tone index | Integer 0–3 |
 | `f0`, `fmin`, `fmax`, frame frequency | Lowest-tone frequency in Hz |
-| Frame time | Seconds relative to the beginning of the supplied audio buffer |
+| Frame time | Seconds from the beginning of the stream, since creation/reset |
 | String output | NUL-terminated ASCII; allocate the documented full capacity |
 
 A source payload is a `uint64_t` with only its low 34 bits used. Bits 33 through
@@ -125,7 +125,28 @@ int main(void) {
     printf("Transmitting: %s\n", normalized);
 
     size_t delivered = 0;
-    int    received = jtty_receive(audio, total_samples, 950.0, 1050.0, on_frame, &delivered);
+    jtty_rx_config config = { 950.0, 1050.0, 128, 128 };
+    jtty_rx *rx = jtty_rx_create(&config);
+    if (!rx) {
+        free(audio);
+        return 1;
+    }
+    int received = 0;
+    for (size_t offset = 0; offset < total_samples;) {
+        size_t chunk = total_samples - offset;
+        if (chunk > 256)
+            chunk = 256;
+        int got = jtty_rx_process(rx, audio + offset, chunk, on_frame, &delivered);
+        if (got < 0) {
+            received = -1;
+            break;
+        }
+        received += got;
+        offset += chunk;
+    }
+    if (received >= 0)
+        received += jtty_rx_flush(rx, on_frame, &delivered);
+    jtty_rx_destroy(rx);
     free(audio);
     if (received < 0) {
         fputs("Receive operation failed\n", stderr);
@@ -339,7 +360,7 @@ any extra capacity untouched. Both pointers must be non-NULL.
 `f0` must be finite and satisfy `0 < f0` and `f0 + 93.75 < 6000`. The output is
 real audio at 12000 Hz with nominal unit peak amplitude, BT=2 Gaussian frequency
 shaping, and amplitude ramps at the beginning and end. The function returns
-0 on success or -1 for invalid parameters or allocation failure.
+0 on success or -1 for invalid parameters. It uses no heap allocation.
 
 For a multi-frame message, concatenate all encoded tones and call the modulator
 once. Separate calls reset phase and apply separate edge ramps. The function
@@ -349,44 +370,109 @@ Apply application gain before conversion to your sound device's PCM format.
 ## Receive audio and handle frames
 
 ```c
-int jtty_receive(const float *audio, size_t count, double fmin, double fmax, jtty_frame_callback callback, void *user);
+typedef struct {
+    double fmin, fmax;
+    size_t candidate_capacity;
+    size_t decode_budget;
+} jtty_rx_config;
+
+jtty_rx *jtty_rx_create(const jtty_rx_config *config);
+int jtty_rx_process(jtty_rx *rx, const float *audio, size_t count,
+                    jtty_frame_callback callback, void *user);
+int jtty_rx_flush(jtty_rx *rx, jtty_frame_callback callback, void *user);
+void jtty_rx_reset(jtty_rx *rx);
+void jtty_rx_destroy(jtty_rx *rx);
+int jtty_rx_get_stats(const jtty_rx *rx, jtty_rx_stats *stats);
 ```
 
-Supply completed, real, mono audio at exactly 12000 Hz. For signed PCM16,
-convert each sample using `(float)sample / 32768.0f`. For stereo or other sample
-rates, select/mix a channel and resample before calling the library. Complex
-IQ must first be converted into the expected real audio representation.
+Supply real mono audio at exactly 12000 Hz. For signed PCM16, convert each
+sample using `(float)sample / 32768.0f`. Select/mix channels and resample before
+calling the library for other input formats. Complex IQ must first be converted
+into the expected real audio representation.
 
-Input conditions:
+`create` copies the configuration and performs exactly one allocation for the
+context and all working buffers. It returns NULL for an invalid configuration,
+size overflow, or allocation failure. Frequencies must be finite and satisfy
+`0 < fmin <= fmax` and `fmax + 93.75 < 6000`.
 
-- `audio` must be non-NULL, including for a zero-length buffer.
-- `count` is a sample count, at most `120 * JTTY_SAMPLE_RATE` (1440000).
-- Samples must be finite with absolute value no greater than `1e6`; normalized
-  audio around ±1 is the conventional input.
-- Frequencies must be finite and satisfy `0 < fmin <= fmax` and
-  `fmax + 93.75 < 6000`. A narrower search window reduces work and memory.
+Both limits must be positive, with `decode_budget <= candidate_capacity`:
 
-A valid buffer shorter than one complete frame returns 0. Otherwise the function
-searches up to 128 candidates, validates recovered payloads, suppresses duplicate
-findings, sorts accepted frames by time, and then invokes the callback for each.
-It returns the accepted frame count, 0 if none were found, or -1 on invalid input
-or allocation failure. `callback` may be NULL when only the count is needed.
+- `candidate_capacity` bounds the number of pending time/frequency hypotheses.
+  Nearby peaks are merged; when the pool is full, stronger peaks replace weaker
+  ones. This bounds memory even in noise or a crowded band.
+- `decode_budget` limits candidate attempts for each 3072-sample (256 ms)
+  interval of candidate start times. Ready candidates are attempted in descending
+  sync score; remaining candidates for that interval are discarded.
 
-Each `jtty_frame` contains:
+For example, `{200, 3000, 128, 128}` searches a broad audio band. These limits
+control acquisition candidates, not the number of states in the FEC trellis.
+Increasing capacity can retain weaker hypotheses, but increases memory and work.
+Neither limit depends on the number or size of `process` calls.
 
-| Field | Meaning |
+`process` accepts arbitrary packet boundaries, including single samples, and
+returns the number of frames delivered during that call, or -1 for invalid
+input/state. `count` is a sample count, at most `INT_MAX` per call. There is no
+120-second stream limit. A 64-bit sample counter tracks the stream position;
+requests too close to its overflow are rejected. `audio` may be NULL only for
+zero count. Samples must be finite with absolute value at most `1e6`.
+The complete input packet is validated before changing state, so a rejected
+packet can be replaced and resubmitted without resetting the receiver.
+
+Analysis advances every 48 samples (4 ms), independently of packet boundaries.
+The receiver preserves the sliding DFT state and 97 rows of tone energies. A
+25848-sample audio ring retains the waveform for time/frequency refinement and
+soft demodulation. At the end of each acquisition interval, decoding waits until
+its full frames and 60 samples of refinement margin are available. Typical
+algorithmic latency from frame start is about 1.9–2.15 seconds; chronology can
+hold boundary results for one further interval. These are sample look-ahead
+requirements, not a wall-clock execution guarantee.
+
+`flush` ends the stream: it attempts available complete frames within the budget,
+delivers held results, and discards incomplete frames without appending zeros.
+It returns the number delivered, or -1 for an invalid context/reentrant call.
+Repeated flush calls return 0. Call `reset` before passing another stream to a
+flushed receiver. Reset clears history, counters, deduplication and stream time,
+while preserving the allocation and configuration. Reset at an audio gap;
+otherwise separate packets are interpreted as contiguous samples.
+
+Results are chronological across calls; deduplication persists between packets.
+`callback` may be NULL when only the count/statistics are needed. Returned counts
+also include frames that would have been delivered with a non-NULL callback.
+
+| Frame field | Meaning |
 | --- | --- |
 | `payload` | Validated 34-bit source word |
-| `time` | Estimated start time in seconds from this buffer's first sample |
+| `time` | Estimated start time in seconds since creation/reset |
 | `frequency` | Estimated lowest-tone frequency in Hz |
 | `sync` | Synchronization score in [0,1]; not an SNR estimate |
 | `text[81]` | Canonical atom text; TEXT5 may include trailing spaces |
 | `eom` | 1 for the sender's final atom, otherwise 0 |
 
-The callback receives the `user` pointer unchanged. It runs synchronously on
-the calling thread and returns `void`; there is no callback cancellation
-mechanism. The library-owned frame pointer is valid only during the callback.
-Copy the entire struct or the fields you need before returning.
+Callbacks run synchronously and receive the unchanged `user` pointer. The frame
+pointer is valid only during the callback; copy it if needed afterwards.
+Do not call process, flush, reset or destroy on the same receiver from its
+callback. Recursive process/flush calls return -1; reset/destroy are ignored
+while processing. Independent contexts may run on separate threads.
+
+`get_stats` returns 0 and copies the following fields, or returns -1 for NULL
+arguments. It does not clear counters:
+
+| Statistic | Meaning |
+| --- | --- |
+| `samples` | Total accepted input samples |
+| `candidates_dropped` | Hypotheses rejected/replaced because the pool was full |
+| `budget_dropped` | Complete hypotheses discarded after exhausting an interval budget |
+| `decode_attempts` | Candidates passed to refinement/deduplication/decoding |
+| `frames` | Successfully decoded frames, including results held for chronological delivery |
+| `pending_candidates` | Current pool occupancy |
+| `memory_bytes` | Complete context allocation size |
+
+Memory depends on bandwidth and capacity, not stream duration or packet size.
+On the tested 64-bit build, capacity 128 uses 300096 bytes at 950–1050 Hz
+and 456488 bytes at 200–3000 Hz.
+The context includes waveform scratch space and a reusable FEC workspace.
+There are no library allocations or frees in process, flush or reset; allocations
+made by application callbacks are outside this guarantee.
 
 ## Message assembly and streaming applications
 
@@ -398,42 +484,28 @@ text looks related. Use EOM to close an assembly, but do not treat it as proof
 that every earlier atom was received: the wire format has no sequence number
 or start-of-message flag. A callback count alone does not establish completeness.
 
-The receive API has no persistent streaming state. For live audio, maintain an
-external buffer and run decoding on a worker thread, not an audio-device
-callback: acquisition allocates memory and may take significant time. A moving
-window must retain enough overlap to contain a complete frame across window
-boundaries. For example, four-second windows advanced by two seconds retain
-two seconds of overlap, exceeding the 1.888-second frame length. This is an
-integration pattern, not a built-in scheduler or a measured latency guarantee.
-
-Convert relative frame times to absolute sample positions using each window's
-origin, and deduplicate frames across overlapping calls. Within-call duplicate
-suppression does not persist between calls. Use payload, absolute timing, and
-frequency together; identical text may be transmitted legitimately more than
-once. Keep device buffering, resampling, frame ownership, and message assembly
-under application control.
+Run reception on a worker thread when the audio callback has a strict execution
+budget: allocation-free operation does not itself bound DSP/FEC execution time.
+The application owns device buffering and message assembly. There is no internal
+thread or asynchronous queue. Changing the search band or capacities requires
+creating a new receiver.
 
 ## Ownership, concurrency, and error handling
 
-Input and output capacities are the caller's responsibility; array dimensions
-in C function declarations do not allocate storage. Use separate, non-overlapping
-input/output buffers unless explicitly shown otherwise. The library does not
-retain caller buffers after a call, return heap objects to free, or modify its
-input audio. Internal allocations are released before returning. You own and
-free audio buffers allocated by your application.
+The application owns input/output arrays and creates/destroys receiver contexts.
+The receiver copies needed audio into its own history; it never retains input
+pointers or modifies input samples. Do not alias input arrays with outputs or
+receiver storage. Destroy a receiver once when finished; destroy/reset accept
+NULL. All context operations require external synchronization if shared between
+threads. There is no mutable global library state.
 
-All functions except `jtty_pack`, `jtty_receive`, and `jtty_section` return 0
-on success and -1 on failure. `jtty_pack` and `jtty_receive` return counts;
-`jtty_section` returns an immutable pointer or NULL. There is no structured
-error-detail API, and callers should not rely on `errno` to classify failures.
-In particular, `jtty_decode` uses -1 for both invalid observations and an ordinary
-decoding failure; failure to decode a noisy frame is expected.
-
-There is no mutable global state in the C library. Independent calls are safe
-in separate threads provided their buffers and callback state are not modified
-concurrently without application synchronization. A wide, long acquisition may
-use substantial memory: approximately 90 MB for 120 seconds over 200–3000 Hz.
-Include trellis stack storage when sizing worker-thread stacks on embedded systems.
+Packing and receive processing return counts or -1. The receiver constructor
+returns a pointer or NULL, and reset/destroy return void. `jtty_section` returns
+an immutable pointer or NULL. Other operations return 0 on success and -1 on
+failure. There is no errno-based error classification. `jtty_decode` uses -1 for
+both invalid observations and ordinary decoding failure on a noisy frame.
+Standalone `jtty_decode` uses a stack workspace; the streaming receiver reuses
+its workspace allocated at initialization.
 
 For measured AWGN performance and its limitations, see the
 [sensitivity report](tests/sensitivity/README.md). The library does not implement

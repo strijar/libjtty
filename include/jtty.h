@@ -43,7 +43,7 @@ enum { JTTY_CALL_CQ,
 };
 
 enum { JTTY_FIELD_ONLY,
-       JTTY_FULL_EXCHANGE 
+       JTTY_FULL_EXCHANGE
 };
 
 enum { JTTY_SERIAL,
@@ -124,12 +124,41 @@ typedef struct {
 
 typedef void (*jtty_frame_callback)(const jtty_frame *, void *);
 
-/* Offline blind frame search, 12 kHz real samples. Frequency limits refer
- * to the lowest tone. Returns decoded frame count or negative error.
- * Results are chronological. Callback may be NULL. At most 120 seconds per call;
- * at most 128 acquisition candidates. Sync is a [0,1] score, not an SNR. */
+/* Stateful streaming receiver. Real mono float audio at 12 kHz.
+ * create performs one allocation; process/flush/reset do not allocate.
+ * Each context is single-threaded and callbacks must not re-enter it. */
 
-int         jtty_receive(const float *audio, size_t count, double fmin, double fmax, jtty_frame_callback callback, void *user);
+typedef struct jtty_rx jtty_rx;
+
+typedef struct {
+    double fmin, fmax;         /* Lowest-tone search range. */
+    size_t candidate_capacity; /* Maximum pending acquisition hypotheses. */
+    size_t decode_budget;      /* Attempts per 3072 input samples (256 ms). */
+} jtty_rx_config;
+
+typedef struct {
+    uint64_t samples, candidates_dropped, budget_dropped, decode_attempts, frames;
+    size_t   pending_candidates, memory_bytes;
+} jtty_rx_stats;
+
+/* Both capacities must be positive, decode_budget <= candidate_capacity. */
+
+jtty_rx *jtty_rx_create(const jtty_rx_config *config);
+
+/* Return delivered frame count, or -1 on invalid input/state. Invalid input
+ * leaves state unchanged. NULL audio is allowed only when count == 0.
+ * Input is consumed synchronously; count may be 0 through INT_MAX. */
+
+int jtty_rx_process(jtty_rx *rx, const float *audio, size_t count, jtty_frame_callback callback, void *user);
+
+/* Finish complete frames, discard incomplete ones; no zero padding.
+ * Idempotent. Call reset before supplying another stream after flush. */
+
+int  jtty_rx_flush(jtty_rx *rx, jtty_frame_callback callback, void *user);
+void jtty_rx_reset(jtty_rx *rx);
+void jtty_rx_destroy(jtty_rx *rx);
+int  jtty_rx_get_stats(const jtty_rx *rx, jtty_rx_stats *stats);
+
 const char *jtty_section(int index); /* 1..86, NULL for invalid index */
 
 #ifdef __cplusplus

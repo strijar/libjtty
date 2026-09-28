@@ -201,6 +201,27 @@ static void collect(const jtty_frame *frame, void *user) {
     r->time[r->count] = frame->time;
     r->frequency[r->count++] = frame->frequency;
 }
+/* Exercise the public streaming interface with small, uneven chunks. */
+static int receive_audio(const float *audio, size_t count, double lo, double hi, jtty_frame_callback callback, void *user) {
+    jtty_rx_config config = { lo, hi, 128, 128 };
+    jtty_rx       *rx = jtty_rx_create(&config);
+    if (!rx)
+        return -1;
+    int total = 0;
+    for (size_t i = 0; i < count;) {
+        size_t chunk = count - i < 137 ? count - i : 137;
+        int    got = jtty_rx_process(rx, audio + i, chunk, callback, user);
+        if (got < 0) {
+            jtty_rx_destroy(rx);
+            return -1;
+        }
+        total += got;
+        i += chunk;
+    }
+    total += jtty_rx_flush(rx, callback, user);
+    jtty_rx_destroy(rx);
+    return total;
+}
 static void audio_tests(void) {
     uint64_t frames[16];
     char     normal[81];
@@ -217,7 +238,7 @@ static void audio_tests(void) {
     for (size_t i = 0; i < count; i++)
         audio[i] += (float) (1.8 * gaussian());
     result r = { 0 };
-    int    got = jtty_receive(audio, count, 1150, 1320, collect, &r);
+    int    got = receive_audio(audio, count, 1150, 1320, collect, &r);
     fprintf(stderr, "Audio with AWGN: %d/%d frames\n", got, n);
     assert(got == n && r.count == n);
     for (int i = 0; i < n; i++) {
@@ -226,13 +247,13 @@ static void audio_tests(void) {
         assert(fabs(r.frequency[i] - 1234.56) < 4);
     }
     memset(audio, 0, count * sizeof(*audio));
-    assert(jtty_receive(audio, count, 1150, 1320, NULL, NULL) == 0);
+    assert(receive_audio(audio, count, 1150, 1320, NULL, NULL) == 0);
     for (size_t i = 0; i < count; i++)
         audio[i] = (float) gaussian();
-    assert(jtty_receive(audio, count, 1150, 1320, NULL, NULL) == 0);
-    assert(jtty_receive(audio, count, 1400, 1300, NULL, NULL) < 0);
+    assert(receive_audio(audio, count, 1150, 1320, NULL, NULL) == 0);
+    assert(receive_audio(audio, count, 1400, 1300, NULL, NULL) < 0);
     audio[0] = NAN;
-    assert(jtty_receive(audio, count, 1150, 1320, NULL, NULL) < 0);
+    assert(receive_audio(audio, count, 1150, 1320, NULL, NULL) < 0);
     free(audio);
 }
 static void multiple_signals(void) {
@@ -251,7 +272,7 @@ static void multiple_signals(void) {
     for (size_t i = 0; i < count; i++)
         mix[i] += 0.7f * second[i];
     result r = { 0 };
-    assert(jtty_receive(mix, count, 750, 1450, collect, &r) == 2);
+    assert(receive_audio(mix, count, 750, 1450, collect, &r) == 2);
     assert(r.p[0] == p[0] && r.p[1] == q[0]);
     free(second);
     free(mix);

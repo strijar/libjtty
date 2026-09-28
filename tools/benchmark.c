@@ -7,7 +7,7 @@
 /* Reproducible synthetic AWGN experiment; not a WSJT-X sensitivity claim. */
 static uint32_t state = 0x79023abc;
 
-static double   uniform(void) {
+static double uniform(void) {
     state ^= state << 13;
     state ^= state >> 17;
     state ^= state << 5;
@@ -48,6 +48,10 @@ int main(int argc, char **argv) {
         trials = (int) n;
     }
 
+    jtty_rx_config config = { 950, 1050, 128, 128 };
+    jtty_rx       *rx = jtty_rx_create(&config);
+    if (!rx)
+        return 1;
     puts("SNR_2500_dB,trials,correct_frames,false_frames");
 
     for (int snr = -4; snr >= -16; snr -= 2) {
@@ -77,7 +81,9 @@ int main(int argc, char **argv) {
 
             result r = { p, 0, 0 };
 
-            if (jtty_receive(audio, count, 950, 1050, record, &r) < 0)
+            jtty_rx_reset(rx);
+            if (jtty_rx_process(rx, audio, count, record, &r) < 0 ||
+                jtty_rx_flush(rx, record, &r) < 0)
                 return 1;
 
             correct += r.correct;
@@ -87,5 +93,6 @@ int main(int argc, char **argv) {
         printf("%d,%d,%d,%d\n", snr, trials, correct, wrong);
         fflush(stdout);
     }
+    jtty_rx_destroy(rx);
     return 0;
 }

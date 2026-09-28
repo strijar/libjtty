@@ -2,7 +2,7 @@
 #include <math.h>
 #include <string.h>
 
-const uint8_t   jt_sync[13] = { 0, 2, 2, 3, 0, 0, 3, 2, 1, 3, 1, 2, 0 };
+const uint8_t jt_sync[13] = { 0, 2, 2, 3, 0, 0, 3, 2, 1, 3, 1, 2, 0 };
 
 static unsigned parity(unsigned x) {
     x ^= x >> 8;
@@ -39,13 +39,26 @@ int jtty_encode(uint64_t payload, uint8_t tones[59]) {
  * must return to its starting state, so accepting an open path is impossible.
  * Unlike the WSJT-X coherent list decoder this uses noncoherent tone scores. */
 
+void jt_fec_init(jt_fec *work) {
+    for (unsigned s = 0; s < 512; s++)
+        for (unsigned d = 0; d < 2; d++)
+            work->tone[d][s] = (uint8_t) jt_trellis_tone(s | (d << 9));
+}
+
 int jtty_decode(const float scores[46][4], uint64_t *payload) {
+    jt_fec work;
+    jt_fec_init(&work);
+    return jt_decode(&work, scores, payload);
+}
+
+int jt_decode(jt_fec *work, const float scores[46][4], uint64_t *payload) {
     if (!scores || !payload)
         return -1;
 
     *payload = 0;
 
-    float  obs[46][4], high[46];
+    float(*obs)[4] = work->obs;
+    float *high = work->high;
     double scale = 0;
 
     for (int t = 0; t < 46; t++) {
@@ -78,12 +91,9 @@ int jtty_decode(const float scores[46][4], uint64_t *payload) {
         for (int k = 0; k < 4; k++)
             obs[t][k] = (float) (((double) scores[t][k] - high[t]) / scale);
 
-    float   prev[512] = { 0 }, next[512];
-    uint8_t trace[46][512], tone[2][512];
-
-    for (unsigned s = 0; s < 512; s++)
-        for (unsigned d = 0; d < 2; d++)
-            tone[d][s] = (uint8_t) jt_trellis_tone(s | (d << 9));
+    float *prev = work->prev, *next = work->next;
+    uint8_t(*trace)[512] = work->trace, (*tone)[512] = work->tone;
+    memset(prev, 0, sizeof(work->prev));
 
     for (int pass = 0; pass < 4; pass++) {
         for (int t = 0; t < 46; t++) {
