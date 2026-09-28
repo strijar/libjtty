@@ -1,0 +1,13 @@
+c5708f241a065495a6293d018edec63267fe2c53262bf758c2aef89ca49eb2b1  wsjtx-3.2.0-rc1/lib/jtty/jtty_source_encoding.txt
+211bc7da02e61905bacebfd4187f9ac4eefabdc3f9c86a8231344c1d77b31870  wsjtx-3.2.0-rc1/lib/jtty/jtty_source_codec.f90
+32babb8068f600b1b1df0d88f1b2da9f00b0d718589d04b83a8148f793fde096  wsjtx-3.2.0-rc1/lib/jtty/jtty_mod.f90
+d2d80233293d2a5e8a640ba792af150c2ee2c78fcaac66beeeefefa0a2b145e8  wsjtx-3.2.0-rc1/lib/jtty/genjtty.f90
+40babc8afe96bed03d39246879387e717ad7e9db3d229f9f12305332bcf6cf48  wsjtx-3.2.0-rc1/lib/jtty/tbcc.f90
+9429c79d2aa242b81c474d3b191479fc967455fb9aa72628dba13aa1d7766211  wsjtx-3.2.0-rc1/lib/jtty/jtty_tbcc_code_profile.f90
+3b78565e3380650cb73884b26453fea6e8cf50bf413370ee020570bd309ae454  wsjtx-3.2.0-rc1/lib/jtty/gen_jttywave.f90
+2f17dc3eaa2a9a93e53df79459404abf6ddddf5e0ae2c47167540aeda5c9940f  wsjtx-3.2.0-rc1/lib/gfsk_pulse.f90
+6402d7cae4d30ed2e42c9ca8d967041d6b1e2248a986d9c2cab7cd37ffc3cb2b  wsjtx-3.2.0-rc1/lib/77bit/packjt77.f90
+5fb3f929cd8a89b2dbf0006c9461443b16a958f2b2dbd8270e2511857e098786  wsjtx-3.2.0-rc1/lib/77bit/packjt77_grammar.f90
+3ffeb7bc24779eec02799835ffba8e36ee55960a9df12f72b72d6fc5cf5043ca  wsjtx-3.2.0-rc1/lib/chkcall.f90
+c7fcb5690402d65042c0c9cff3e9a042df895cfe13e2aa1e85a92ca43dd0dc00  wsjtx-3.2.0-rc1/tests/unit/jtty/test_jtty_pack.f90
+a8e808381fa08586dff495802f8509467ea2de752faf548f4f8001bc300e489e  wsjtx-3.2.0-rc1/tests/unit/jtty/test_jtty_tbcc_code_profile.f90

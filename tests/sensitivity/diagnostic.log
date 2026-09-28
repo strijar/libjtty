@@ -1,0 +1,4 @@
+ EXTRA: expected=599 3014 got=TU VP5CVM CQ eom= T  f=   1022.76367      t=  0.861333370    
+ EXTRA: expected=599 4172 got=TU NOW 3Q6MRE eom= F  f=   988.269531      t=  0.718666673    
+ EXTRA: expected=XMQ29 got=ZL[6T eom= T  f=   1020.53125      t=   1.71200001    
+ EXTRA: expected=68C3A got=MD,CC eom= F  f=   984.072266      t=   1.84399998    

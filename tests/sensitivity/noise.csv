@@ -1,0 +1,2 @@
+snr_db,trials,c_correct,wsjtx_correct,c_wrong,wsjtx_wrong,both,c_only,wsjtx_only,c_seconds,wsjtx_seconds
+noise,1000,0,0,0,0,0,0,0,5.718863,25.957413

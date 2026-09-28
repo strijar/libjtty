@@ -1,0 +1,2 @@
+snr_db,trials,c_correct,wsjtx_correct,c_wrong,wsjtx_wrong,both,c_only,wsjtx_only,c_seconds,wsjtx_seconds
+-10,500,500,500,0,4,500,0,0,5.784519,20.326415
