@@ -31,11 +31,10 @@ jtty_rx *jtty_rx_create(const jtty_rx_config *config) {
         return NULL;
 
     size_t bases = (size_t) floor((config->fmax - config->fmin) / JT_DF) + 1;
-    size_t bins = bases + 12, bytes = sizeof(jtty_rx), bank, energy, pending, recent, output;
+    size_t bins = bases + 12, bytes = sizeof(jtty_rx), energy, pending, recent, output;
     size_t capacity = config->candidate_capacity;
 
-    if (reserve(&bytes, bins, sizeof(jt_bin), _Alignof(jt_bin), &bank) ||
-        reserve(&bytes, bins * JT_ENERGY_ROWS, sizeof(float), _Alignof(float), &energy) ||
+    if (reserve(&bytes, bins * JT_ENERGY_ROWS, sizeof(float), _Alignof(float), &energy) ||
         reserve(&bytes, capacity, sizeof(jt_pending), _Alignof(jt_pending), &pending) ||
         reserve(&bytes, 2 * capacity, sizeof(jtty_frame), _Alignof(jtty_frame), &recent) ||
         reserve(&bytes, 2 * capacity, sizeof(jtty_frame), _Alignof(jtty_frame), &output))
@@ -50,7 +49,6 @@ jtty_rx *jtty_rx_create(const jtty_rx_config *config) {
     rx->stats.memory_bytes = bytes;
     rx->bases = bases;
     rx->bins = bins;
-    rx->bank = (jt_bin *) ((unsigned char *) rx + bank);
     rx->energy = (float *) ((unsigned char *) rx + energy);
     rx->pending = (jt_pending *) ((unsigned char *) rx + pending);
     rx->recent = (jtty_frame *) ((unsigned char *) rx + recent);

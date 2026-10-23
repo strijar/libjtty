@@ -40,9 +40,12 @@ int  jt_decode(jt_fec *work, const float scores[46][4], uint64_t *payload);
 #define JT_REFINE_MARGIN 60
 #define JT_AUDIO_SIZE    (JTTY_FRAME_SAMPLES + JT_EPOCH + 2 * JT_REFINE_MARGIN)
 
-typedef struct {
-    double wr, wi, dr, di, zr, zi, re, im;
-} jt_bin;
+/* Energies at each hop come from a 1536-point DFT of the last symbol,
+ * zero-padded, whose bins are JT_DF apart: three radix-2 FFTs of 512 points
+ * combined for the bins searched. */
+#define JT_DFT_SIZE  1536
+#define JT_FFT_SIZE  512
+#define JT_DFT_PARTS (JT_DFT_SIZE / JT_FFT_SIZE)
 
 typedef struct {
     uint64_t sample;
@@ -57,7 +60,10 @@ struct jtty_rx {
     int            finished, busy;
     jt_fec         fec;
     float          audio[JT_AUDIO_SIZE], scratch[JTTY_FRAME_SAMPLES + 2 * JT_REFINE_MARGIN];
-    jt_bin        *bank;
+    float          fft_re[JT_DFT_PARTS][JT_FFT_SIZE], fft_im[JT_DFT_PARTS][JT_FFT_SIZE];
+    float          cos_dft[JT_DFT_SIZE], sin_dft[JT_DFT_SIZE];
+    float          shift_re[JTTY_SPS], shift_im[JTTY_SPS];
+    size_t         first_bin;
     float         *energy;
     size_t         audio_at, until_hop, energy_row;
     uint64_t       rows;
