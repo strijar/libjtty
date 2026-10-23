@@ -4,6 +4,10 @@
 
 void jt_sync_init(jtty_rx *rx) {
     memset(rx->energy, 0, JT_ENERGY_ROWS * rx->bins * sizeof(float));
+    rx->audio_at = 0;
+    rx->until_hop = JTTY_SPS;
+    rx->energy_row = 0;
+    rx->rows = 0;
 
     for (size_t b = 0; b < rx->bins; b++) {
         double w = 2 * JT_PI * (rx->config.fmin + (double) b * JT_DF) / JTTY_SAMPLE_RATE;
@@ -47,15 +51,25 @@ static void candidate(jtty_rx *rx, jt_pending c) {
     rx->stats.candidates_dropped++;
 }
 
+/* The ring position, the next hop and the newest energy row are counted as
+ * samples arrive and wrap by subtraction. A 64-bit remainder per sample is a
+ * library call on 32-bit ARM and was a fifth of a Pi Zero 2 W's time. */
 void jt_sync_push(jtty_rx *rx, float sample) {
     uint64_t n = rx->stats.samples;
-    double   old = n >= JTTY_SPS ? rx->audio[(n - JTTY_SPS) % JT_AUDIO_SIZE] : 0;
+    size_t   old_at = rx->audio_at >= JTTY_SPS ? rx->audio_at - JTTY_SPS : rx->audio_at + JT_AUDIO_SIZE - JTTY_SPS;
+    double   old = n >= JTTY_SPS ? rx->audio[old_at] : 0;
 
-    rx->audio[n % JT_AUDIO_SIZE] = sample;
+    rx->audio[rx->audio_at] = sample;
 
-    int      snapshot = n + 1 >= JTTY_SPS && (n + 1 - JTTY_SPS) % JT_HOP == 0;
-    uint64_t row = snapshot ? (n + 1 - JTTY_SPS) / JT_HOP : 0;
-    float   *energy = rx->energy + (row % JT_ENERGY_ROWS) * rx->bins;
+    if (++rx->audio_at == JT_AUDIO_SIZE)
+        rx->audio_at = 0;
+
+    int snapshot = --rx->until_hop == 0;
+
+    if (snapshot)
+        rx->until_hop = JT_HOP;
+
+    float *energy = rx->energy + rx->energy_row * rx->bins;
 
     for (size_t b = 0; b < rx->bins; b++) {
         jt_bin *v = &rx->bank[b];
@@ -69,8 +83,12 @@ void jt_sync_push(jtty_rx *rx, float sample) {
 
             v->re = v->im = 0;
 
+            size_t at = rx->audio_at;
+
             for (size_t k = 0; k < JTTY_SPS; k++) {
-                double x = rx->audio[(n - k) % JT_AUDIO_SIZE];
+                at = at ? at - 1 : JT_AUDIO_SIZE - 1;
+
+                double x = rx->audio[at];
 
                 v->re += x * zr;
                 v->im += x * zi;
@@ -98,19 +116,38 @@ void jt_sync_push(jtty_rx *rx, float sample) {
 
     rx->stats.samples++;
 
-    if (!snapshot || row < JT_ENERGY_ROWS - 1)
+    if (!snapshot)
         return;
 
-    uint64_t start = row - (JT_ENERGY_ROWS - 1);
+    uint64_t row = rx->rows++;
+
+    if (++rx->energy_row == JT_ENERGY_ROWS)
+        rx->energy_row = 0;
+
+    if (row < JT_ENERGY_ROWS - 1)
+        return;
+
+    /* The oldest row is the one the next snapshot overwrites. The thirteen
+     * rows a score reads are found once per hop rather than once per bin,
+     * and the score is single precision: double division is slow on small
+     * ARM cores. */
+    uint64_t     start = row - (JT_ENERGY_ROWS - 1);
+    const float *rows[13];
+
+    for (size_t s = 0; s < 13; s++) {
+        size_t r = rx->energy_row + s * 8;
+
+        rows[s] = rx->energy + (r >= JT_ENERGY_ROWS ? r - JT_ENERGY_ROWS : r) * rx->bins;
+    }
 
     for (size_t b = 0; b < rx->bases; b++) {
-        double score = 0;
+        float score = 0;
 
         for (size_t s = 0; s < 13; s++) {
-            const float *e = rx->energy + ((start + s * 8) % JT_ENERGY_ROWS) * rx->bins + b;
-            double       sum = (double) e[0] + e[4] + e[8] + e[12];
+            const float *e = rows[s] + b;
+            float        sum = e[0] + e[4] + e[8] + e[12];
 
-            if (sum > 1e-25)
+            if (sum > 1e-25f)
                 score += e[4 * jt_sync[s]] / sum;
         }
 

@@ -59,6 +59,8 @@ struct jtty_rx {
     float          audio[JT_AUDIO_SIZE], scratch[JTTY_FRAME_SAMPLES + 2 * JT_REFINE_MARGIN];
     jt_bin        *bank;
     float         *energy;
+    size_t         audio_at, until_hop, energy_row;
+    uint64_t       rows;
     jt_pending    *pending;
     jtty_frame    *recent, *output;
 };

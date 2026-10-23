@@ -102,8 +102,14 @@ static void decode(jtty_rx *rx, jt_pending candidate) {
 
     size_t count = (size_t) (end - first);
 
-    for (size_t i = 0; i < count; i++)
-        rx->scratch[i] = rx->audio[(first + i) % JT_AUDIO_SIZE];
+    size_t at = (size_t) (first % JT_AUDIO_SIZE);
+
+    for (size_t i = 0; i < count; i++) {
+        rx->scratch[i] = rx->audio[at];
+
+        if (++at == JT_AUDIO_SIZE)
+            at = 0;
+    }
 
     jt_candidate c = { (size_t) (candidate.sample - first), candidate.frequency, candidate.score };
     jt_refine(rx->scratch, count, &c);
