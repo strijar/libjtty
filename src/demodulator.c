@@ -1,22 +1,55 @@
 #include "internal.h"
 #include <math.h>
 
-void jt_correlate(const float *audio, size_t start, double f0, float scores[4]) {
-    for (int k = 0; k < 4; k++) {
-        double angle = 2 * JT_PI * (f0 + k * 31.25) / 12000;
-        double wr = cos(angle), wi = -sin(angle), zr = 1, zi = 0, re = 0, im = 0;
+/* Goertzel's recursion gives each tone's energy with one multiply per sample.
+ * The four tones are independent, so they run side by side: as one vector
+ * where the compiler has vector extensions, which NEON executes together on
+ * an in-order core such as the Cortex-A53, and as four interleaved scalars
+ * otherwise. This was most of a Pi Zero 2 W's receive time. */
+#if defined(__GNUC__) || defined(__clang__)
+typedef float jt_four __attribute__((vector_size(16)));
 
-        for (size_t i = 0; i < JTTY_SPS; i++) {
-            double x = audio[start + i];
-            re += x * zr;
-            im += x * zi;
-            double r = zr * wr - zi * wi;
-            zi = zr * wi + zi * wr;
-            zr = r;
-        }
-        scores[k] = (float) ((re * re + im * im) / (JTTY_SPS * JTTY_SPS));
+void jt_correlate(const float *audio, size_t start, double f0, float scores[4]) {
+    jt_four c, s1 = { 0, 0, 0, 0 }, s2 = { 0, 0, 0, 0 };
+
+    for (int k = 0; k < 4; k++)
+        c[k] = (float) (2 * cos(2 * JT_PI * (f0 + k * 31.25) / 12000));
+
+    for (size_t i = 0; i < JTTY_SPS; i++) {
+        float   x = audio[start + i];
+        jt_four s0 = (jt_four) { x, x, x, x } + c * s1 - s2;
+
+        s2 = s1;
+        s1 = s0;
     }
+
+    jt_four power = s1 * s1 + s2 * s2 - c * s1 * s2;
+
+    for (int k = 0; k < 4; k++)
+        scores[k] = power[k] / (JTTY_SPS * JTTY_SPS);
 }
+#else
+void jt_correlate(const float *audio, size_t start, double f0, float scores[4]) {
+    float c[4], s1[4] = { 0, 0, 0, 0 }, s2[4] = { 0, 0, 0, 0 };
+
+    for (int k = 0; k < 4; k++)
+        c[k] = (float) (2 * cos(2 * JT_PI * (f0 + k * 31.25) / 12000));
+
+    for (size_t i = 0; i < JTTY_SPS; i++) {
+        float x = audio[start + i];
+
+        for (int k = 0; k < 4; k++) {
+            float s0 = x + c[k] * s1[k] - s2[k];
+
+            s2[k] = s1[k];
+            s1[k] = s0;
+        }
+    }
+
+    for (int k = 0; k < 4; k++)
+        scores[k] = (s1[k] * s1[k] + s2[k] * s2[k] - c[k] * s1[k] * s2[k]) / (JTTY_SPS * JTTY_SPS);
+}
+#endif
 
 double jt_sync_score(const float *audio, size_t start, double f0) {
     double score = 0;
